@@ -1,0 +1,169 @@
+---
+title: "How Has My Name Changed in Popularity?"
+author: ""
+format:
+  html:
+    toc: true
+    code-fold: true
+execute:
+  warning: false
+  message: false
+---
+
+```{=html}
+<label for="name-input">Enter a name:</label>
+<input id="name-input" type="text" value="Olivia" style="width: 300px;">
+<button id="update-charts" type="button">Update charts</button>
+<p id="status-message"></p>
+```
+```{r}
+#| label: setup
+
+library(tidyverse)
+
+zip_url <- "https://www.ssa.gov/oact/babynames/names.zip"
+zip_file <- "names.zip"
+data_dir <- "ssa-names"
+
+if (!dir.exists(data_dir)) {
+  dir.create(data_dir)
+}
+
+ssa_available <- if (file.exists(zip_file)) {
+  TRUE
+} else {
+  tryCatch({
+    download.file(zip_url, zip_file, mode = "wb")
+    TRUE
+  }, error = \(error) FALSE)
+}
+
+if (ssa_available) {
+  if (length(list.files(data_dir, pattern = "^yob[0-9]{4}\\.txt$")) == 0) {
+    unzip(zip_file, exdir = data_dir)
+  }
+
+  name_files <- list.files(
+    data_dir,
+    pattern = "^yob[0-9]{4}\\.txt$",
+    full.names = TRUE
+  )
+
+  baby_names <- map_dfr(name_files, \(file) {
+    read_csv(
+      file,
+      col_names = c("name", "sex", "births"),
+      show_col_types = FALSE
+    ) |>
+      mutate(year = as.integer(str_extract(basename(file), "[0-9]{4}")))
+  })
+
+  source_note <- "the SSA data"
+} else {
+  # This older mirror keeps the document renderable if SSA blocks downloads.
+  fallback_file <- "babynames.rda"
+  if (!file.exists(fallback_file)) {
+    download.file(
+      "https://raw.githubusercontent.com/hadley/babynames/master/data/babynames.rda",
+      fallback_file,
+      mode = "wb"
+    )
+  }
+
+  load(fallback_file)
+  baby_names <- babynames |>
+    transmute(year, name, sex, births = n)
+  source_note <- "the packaged babynames mirror"
+}
+
+latest_year <- max(baby_names$year)
+first_year <- latest_year - 9
+
+ranked_names <- baby_names |>
+  filter(year >= first_year, year <= latest_year) |>
+  group_by(year, sex) |>
+  arrange(desc(births), name, .by_group = TRUE) |>
+  mutate(
+    rank = row_number(),
+    popularity_share = births / sum(births)
+  ) |>
+  ungroup()
+
+trend_data <- ranked_names |>
+  select(year, name, sex, births, rank, popularity_share)
+```
+
+## Number of babies
+
+<div id="births-plot" style="height: 420px;"></div>
+
+## Rank
+
+A smaller rank means greater popularity. The reversed y-axis makes movement toward rank 1 appear higher on the graph.
+
+<div id="rank-plot" style="height: 420px;"></div>
+
+## Summary table
+
+<div id="summary-table"></div>
+
+## Patterns to discuss
+
+Use the graphs and table to answer these questions:
+
+- Did the number of babies given this name increase, decrease, or stay fairly stable?
+- Did the name's rank change in the same direction as its number of births?
+- Does the name appear for more than one sex? If so, is one trend different from the other?
+- Were there any sudden increases or decreases?
+- Did the name become more or less common relative to all births?
+- What cultural, historical, or generational explanation might help explain the pattern?
+
+## Conclusion
+
+<div id="conclusion-text"></div>
+
+```{r}
+#| results: asis
+#| echo: false
+
+data_json <- jsonlite::toJSON(trend_data, auto_unbox = TRUE)
+
+cat(
+  '<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>',
+  '<script>',
+  'const babyNameData = ', data_json, ';',
+  'const years = [...new Set(babyNameData.map(row => row.year))].sort();',
+  'const nameInput = document.getElementById("name-input");',
+  'const updateButton = document.getElementById("update-charts");',
+  'const statusMessage = document.getElementById("status-message");',
+  'const formatNumber = value => Number(value).toLocaleString();',
+  'const sexLabel = sex => sex === "F" ? "Female" : "Male";',
+  'function updateCharts() {',
+  '  const selectedName = nameInput.value.trim();',
+  '  const selectedRows = babyNameData.filter(row => row.name.toLowerCase() === selectedName.toLowerCase());',
+  '  if (!selectedName || selectedRows.length === 0) {',
+  '    statusMessage.textContent = "No records found for that name. Try another name.";',
+  '    document.getElementById("summary-table").innerHTML = "";',
+  '    document.getElementById("conclusion-text").innerHTML = "";',
+  '    Plotly.purge("births-plot"); Plotly.purge("rank-plot"); return;',
+  '  }',
+  '  statusMessage.textContent = "Showing results for " + selectedName + ".";',
+  '  const sexes = [...new Set(selectedRows.map(row => row.sex))];',
+  '  const colors = { F: "#176b87", M: "#d95f59" };',
+  '  const birthsTraces = sexes.map(sex => { const rows = selectedRows.filter(row => row.sex === sex); return { x: rows.map(row => row.year), y: rows.map(row => row.births), mode: "lines+markers", name: sexLabel(sex), line: { color: colors[sex] } }; });',
+  '  const rankTraces = sexes.map(sex => { const rows = selectedRows.filter(row => row.sex === sex); return { x: rows.map(row => row.year), y: rows.map(row => row.rank), mode: "lines+markers", name: sexLabel(sex), line: { color: colors[sex] } }; });',
+  '  const chartLayout = title => ({ title, xaxis: { title: "Year", dtick: 1 }, margin: { t: 55, r: 20, b: 55, l: 65 } });',
+  '  Plotly.newPlot("births-plot", birthsTraces, chartLayout("Births with the name " + selectedName), { responsive: true });',
+  '  Plotly.newPlot("rank-plot", rankTraces, { ...chartLayout("Rank of the name " + selectedName), yaxis: { title: "Rank (1 is most popular)", autorange: "reversed" } }, { responsive: true });',
+  '  const tableRows = selectedRows.slice().sort((a, b) => a.sex.localeCompare(b.sex) || a.year - b.year);',
+  '  document.getElementById("summary-table").innerHTML = "<table><thead><tr><th>Year</th><th>Sex</th><th>Births</th><th>Rank</th><th>Share</th></tr></thead><tbody>" + tableRows.map(row => `<tr><td>${row.year}</td><td>${sexLabel(row.sex)}</td><td>${formatNumber(row.births)}</td><td>${formatNumber(row.rank)}</td><td>${(row.popularity_share * 100).toFixed(3)}%</td></tr>`).join("") + "</tbody></table>";',
+  '  const first = tableRows[0]; const last = tableRows[tableRows.length - 1]; const direction = last.births > first.births ? "increased" : last.births < first.births ? "decreased" : "remained steady";',
+  '  document.getElementById("conclusion-text").textContent = `For the selected data, ${selectedName} ${direction} from ${formatNumber(first.births)} births in ${first.year} to ${formatNumber(last.births)} births in ${last.year}. Its rank changed from #${first.rank} to #${last.rank}.`;',
+  '}',
+  'updateButton.addEventListener("click", updateCharts);',
+  'updateCharts();',
+  '</script>',
+  sep = "\n"
+)
+```
+

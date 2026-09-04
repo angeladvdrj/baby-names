@@ -5,43 +5,21 @@ format:
   html:
     toc: true
     code-fold: true
-server: shiny
 execute:
   warning: false
   message: false
 ---
 
-## Research question
-
-How has the popularity of the selected name changed during the ten most recent years available in the U.S. Social Security Administration baby-name data?
-
-```{r}
-#| context: setup
-#| echo: false
-
-textInput(
-  inputId = "name",
-  label = "Enter a name:",
-  value = "Olivia",
-  width = "300px"
-)
-
-actionButton(
-  inputId = "submit_name",
-  label = "Update charts"
-)
+```{=html}
+<label for="name-input">Enter a name:</label>
+<input id="name-input" type="text" value="Olivia" style="width: 300px;">
+<button id="update-charts" type="button">Update charts</button>
+<p id="status-message"></p>
 ```
-
-## Data
-
-This analysis uses baby-name records from the [U.S. Social Security Administration](https://www.ssa.gov/oact/babynames/). Each row contains a name, sex, year, and number of babies given that name.
-
 ```{r}
-#| context: setup
 #| label: setup
 
 library(tidyverse)
-library(shiny)
 
 zip_url <- "https://www.ssa.gov/oact/babynames/names.zip"
 zip_file <- "names.zip"
@@ -97,16 +75,7 @@ if (ssa_available) {
     transmute(year, name, sex, births = n)
   source_note <- "the packaged babynames mirror"
 }
-```
 
-This document is using `r source_note`. The mirror is an older copy, so if the SSA download is available it will automatically be used instead.
-
-## Prepare the data
-
-The analysis uses the ten latest complete years in the dataset. Rank is calculated separately for each year and sex because the SSA data reports names by sex.
-
-```{r}
-#| context: server
 latest_year <- max(baby_names$year)
 first_year <- latest_year - 9
 
@@ -120,120 +89,23 @@ ranked_names <- baby_names |>
   ) |>
   ungroup()
 
-submitted_name <- eventReactive(
-  input$submit_name,
-  str_squish(input$name),
-  ignoreNULL = FALSE
-)
-
-name_trend <- reactive({
-  my_name <- submitted_name()
-
-  trend <- ranked_names |>
-    filter(str_to_lower(name) == str_to_lower(my_name)) |>
-    select(year, name, sex, births, rank, popularity_share)
-
-  trend |>
-    complete(
-      year = first_year:latest_year,
-      sex,
-      fill = list(births = 0, popularity_share = 0)
-    ) |>
-    mutate(name = my_name)
-})
-
-output$births_plot <- renderPlot({
-  trend <- name_trend()
-  validate(need(nrow(trend) > 0, "No records found for this name."))
-
-  ggplot(trend, aes(x = year, y = births, color = sex)) +
-    geom_line(linewidth = 1) +
-    geom_point(size = 2) +
-    scale_x_continuous(breaks = first_year:latest_year) +
-    labs(
-      title = paste("Births with the name", submitted_name()),
-      x = "Year",
-      y = "Number of babies",
-      color = "Sex"
-    ) +
-    theme_minimal() +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))
-})
-
-output$rank_plot <- renderPlot({
-  trend <- name_trend()
-  validate(need(nrow(trend) > 0, "No records found for this name."))
-
-  ggplot(trend, aes(x = year, y = rank, color = sex)) +
-    geom_line(linewidth = 1, na.rm = TRUE) +
-    geom_point(size = 2, na.rm = TRUE) +
-    scale_x_continuous(breaks = first_year:latest_year) +
-    scale_y_reverse() +
-    labs(
-      title = paste("Rank of the name", submitted_name()),
-      x = "Year",
-      y = "Rank (1 is most popular)",
-      color = "Sex"
-    ) +
-    theme_minimal() +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))
-})
-
-output$summary_table <- renderTable({
-  trend <- name_trend()
-  validate(need(nrow(trend) > 0, "No records found for this name."))
-
-  trend |>
-    mutate(popularity_share = scales::percent(popularity_share, accuracy = 0.001)) |>
-    arrange(sex, year)
-})
-
-output$conclusion_text <- renderText({
-  trend <- name_trend() |> filter(births > 0)
-  validate(need(nrow(trend) > 0, "No records found for this name."))
-
-  summaries <- trend |>
-    group_by(sex) |>
-    group_split() |>
-    map_chr(\(df) {
-      sex_label <- if (unique(df$sex) == "F") "female" else "male"
-      start <- df |> filter(year == min(year))
-      end <- df |> filter(year == max(year))
-      peak <- df |> slice_max(births, n = 1, with_ties = FALSE)
-      direction <- if (end$births > start$births) "increased" else if (end$births < start$births) "decreased" else "remained steady"
-
-      paste0(
-        "For ", sex_label, " babies, the name ", submitted_name(), " ", direction, " from ",
-        format(start$births, big.mark = ","), " births (rank #", start$rank, ") in ", start$year,
-        " to ", format(end$births, big.mark = ","), " births (rank #", end$rank, ") in ", end$year, ". ",
-        "Its peak popularity was in ", peak$year, " with ",
-        format(peak$births, big.mark = ","), " births (rank #", peak$rank, ")."
-      )
-    })
-
-  paste(summaries, collapse = "\n\n")
-})
+trend_data <- ranked_names |>
+  select(year, name, sex, births, rank, popularity_share)
 ```
 
 ## Number of babies
 
-```{r}
-plotOutput("births_plot")
-```
+<div id="births-plot" style="height: 420px;"></div>
 
 ## Rank
 
 A smaller rank means greater popularity. The reversed y-axis makes movement toward rank 1 appear higher on the graph.
 
-```{r}
-plotOutput("rank_plot")
-```
+<div id="rank-plot" style="height: 420px;"></div>
 
 ## Summary table
 
-```{r}
-tableOutput("summary_table")
-```
+<div id="summary-table"></div>
 
 ## Patterns to discuss
 
@@ -248,6 +120,49 @@ Use the graphs and table to answer these questions:
 
 ## Conclusion
 
+<div id="conclusion-text"></div>
+
 ```{r}
-textOutput("conclusion_text")
+#| results: asis
+#| echo: false
+
+data_json <- jsonlite::toJSON(trend_data, auto_unbox = TRUE)
+
+cat(
+  '<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>',
+  '<script>',
+  'const babyNameData = ', data_json, ';',
+  'const years = [...new Set(babyNameData.map(row => row.year))].sort();',
+  'const nameInput = document.getElementById("name-input");',
+  'const updateButton = document.getElementById("update-charts");',
+  'const statusMessage = document.getElementById("status-message");',
+  'const formatNumber = value => Number(value).toLocaleString();',
+  'const sexLabel = sex => sex === "F" ? "Female" : "Male";',
+  'function updateCharts() {',
+  '  const selectedName = nameInput.value.trim();',
+  '  const selectedRows = babyNameData.filter(row => row.name.toLowerCase() === selectedName.toLowerCase());',
+  '  if (!selectedName || selectedRows.length === 0) {',
+  '    statusMessage.textContent = "No records found for that name. Try another name.";',
+  '    document.getElementById("summary-table").innerHTML = "";',
+  '    document.getElementById("conclusion-text").innerHTML = "";',
+  '    Plotly.purge("births-plot"); Plotly.purge("rank-plot"); return;',
+  '  }',
+  '  statusMessage.textContent = "Showing results for " + selectedName + ".";',
+  '  const sexes = [...new Set(selectedRows.map(row => row.sex))];',
+  '  const colors = { F: "#176b87", M: "#d95f59" };',
+  '  const birthsTraces = sexes.map(sex => { const rows = selectedRows.filter(row => row.sex === sex); return { x: rows.map(row => row.year), y: rows.map(row => row.births), mode: "lines+markers", name: sexLabel(sex), line: { color: colors[sex] } }; });',
+  '  const rankTraces = sexes.map(sex => { const rows = selectedRows.filter(row => row.sex === sex); return { x: rows.map(row => row.year), y: rows.map(row => row.rank), mode: "lines+markers", name: sexLabel(sex), line: { color: colors[sex] } }; });',
+  '  const chartLayout = title => ({ title, xaxis: { title: "Year", dtick: 1 }, margin: { t: 55, r: 20, b: 55, l: 65 } });',
+  '  Plotly.newPlot("births-plot", birthsTraces, chartLayout("Births with the name " + selectedName), { responsive: true });',
+  '  Plotly.newPlot("rank-plot", rankTraces, { ...chartLayout("Rank of the name " + selectedName), yaxis: { title: "Rank (1 is most popular)", autorange: "reversed" } }, { responsive: true });',
+  '  const tableRows = selectedRows.slice().sort((a, b) => a.sex.localeCompare(b.sex) || a.year - b.year);',
+  '  document.getElementById("summary-table").innerHTML = "<table><thead><tr><th>Year</th><th>Sex</th><th>Births</th><th>Rank</th><th>Share</th></tr></thead><tbody>" + tableRows.map(row => `<tr><td>${row.year}</td><td>${sexLabel(row.sex)}</td><td>${formatNumber(row.births)}</td><td>${formatNumber(row.rank)}</td><td>${(row.popularity_share * 100).toFixed(3)}%</td></tr>`).join("") + "</tbody></table>";',
+  '  const first = tableRows[0]; const last = tableRows[tableRows.length - 1]; const direction = last.births > first.births ? "increased" : last.births < first.births ? "decreased" : "remained steady";',
+  '  document.getElementById("conclusion-text").textContent = `For the selected data, ${selectedName} ${direction} from ${formatNumber(first.births)} births in ${first.year} to ${formatNumber(last.births)} births in ${last.year}. Its rank changed from #${first.rank} to #${last.rank}.`;',
+  '}',
+  'updateButton.addEventListener("click", updateCharts);',
+  'updateCharts();',
+  '</script>',
+  sep = "\n"
+)
 ```
