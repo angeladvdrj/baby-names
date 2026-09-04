@@ -1,0 +1,253 @@
+---
+title: "How Has My Name Changed in Popularity?"
+author: ""
+format:
+  html:
+    toc: true
+    code-fold: true
+server: shiny
+execute:
+  warning: false
+  message: false
+---
+
+## Research question
+
+How has the popularity of the selected name changed during the ten most recent years available in the U.S. Social Security Administration baby-name data?
+
+```{r}
+#| context: setup
+#| echo: false
+
+textInput(
+  inputId = "name",
+  label = "Enter a name:",
+  value = "Olivia",
+  width = "300px"
+)
+
+actionButton(
+  inputId = "submit_name",
+  label = "Update charts"
+)
+```
+
+## Data
+
+This analysis uses baby-name records from the [U.S. Social Security Administration](https://www.ssa.gov/oact/babynames/). Each row contains a name, sex, year, and number of babies given that name.
+
+```{r}
+#| context: setup
+#| label: setup
+
+library(tidyverse)
+library(shiny)
+
+zip_url <- "https://www.ssa.gov/oact/babynames/names.zip"
+zip_file <- "names.zip"
+data_dir <- "ssa-names"
+
+if (!dir.exists(data_dir)) {
+  dir.create(data_dir)
+}
+
+ssa_available <- if (file.exists(zip_file)) {
+  TRUE
+} else {
+  tryCatch({
+    download.file(zip_url, zip_file, mode = "wb")
+    TRUE
+  }, error = \(error) FALSE)
+}
+
+if (ssa_available) {
+  if (length(list.files(data_dir, pattern = "^yob[0-9]{4}\\.txt$")) == 0) {
+    unzip(zip_file, exdir = data_dir)
+  }
+
+  name_files <- list.files(
+    data_dir,
+    pattern = "^yob[0-9]{4}\\.txt$",
+    full.names = TRUE
+  )
+
+  baby_names <- map_dfr(name_files, \(file) {
+    read_csv(
+      file,
+      col_names = c("name", "sex", "births"),
+      show_col_types = FALSE
+    ) |>
+      mutate(year = as.integer(str_extract(basename(file), "[0-9]{4}")))
+  })
+
+  source_note <- "the SSA data"
+} else {
+  # This older mirror keeps the document renderable if SSA blocks downloads.
+  fallback_file <- "babynames.rda"
+  if (!file.exists(fallback_file)) {
+    download.file(
+      "https://raw.githubusercontent.com/hadley/babynames/master/data/babynames.rda",
+      fallback_file,
+      mode = "wb"
+    )
+  }
+
+  load(fallback_file)
+  baby_names <- babynames |>
+    transmute(year, name, sex, births = n)
+  source_note <- "the packaged babynames mirror"
+}
+```
+
+This document is using `r source_note`. The mirror is an older copy, so if the SSA download is available it will automatically be used instead.
+
+## Prepare the data
+
+The analysis uses the ten latest complete years in the dataset. Rank is calculated separately for each year and sex because the SSA data reports names by sex.
+
+```{r}
+#| context: server
+latest_year <- max(baby_names$year)
+first_year <- latest_year - 9
+
+ranked_names <- baby_names |>
+  filter(year >= first_year, year <= latest_year) |>
+  group_by(year, sex) |>
+  arrange(desc(births), name, .by_group = TRUE) |>
+  mutate(
+    rank = row_number(),
+    popularity_share = births / sum(births)
+  ) |>
+  ungroup()
+
+submitted_name <- eventReactive(
+  input$submit_name,
+  str_squish(input$name),
+  ignoreNULL = FALSE
+)
+
+name_trend <- reactive({
+  my_name <- submitted_name()
+
+  trend <- ranked_names |>
+    filter(str_to_lower(name) == str_to_lower(my_name)) |>
+    select(year, name, sex, births, rank, popularity_share)
+
+  trend |>
+    complete(
+      year = first_year:latest_year,
+      sex,
+      fill = list(births = 0, popularity_share = 0)
+    ) |>
+    mutate(name = my_name)
+})
+
+output$births_plot <- renderPlot({
+  trend <- name_trend()
+  validate(need(nrow(trend) > 0, "No records found for this name."))
+
+  ggplot(trend, aes(x = year, y = births, color = sex)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    scale_x_continuous(breaks = first_year:latest_year) +
+    labs(
+      title = paste("Births with the name", submitted_name()),
+      x = "Year",
+      y = "Number of babies",
+      color = "Sex"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+})
+
+output$rank_plot <- renderPlot({
+  trend <- name_trend()
+  validate(need(nrow(trend) > 0, "No records found for this name."))
+
+  ggplot(trend, aes(x = year, y = rank, color = sex)) +
+    geom_line(linewidth = 1, na.rm = TRUE) +
+    geom_point(size = 2, na.rm = TRUE) +
+    scale_x_continuous(breaks = first_year:latest_year) +
+    scale_y_reverse() +
+    labs(
+      title = paste("Rank of the name", submitted_name()),
+      x = "Year",
+      y = "Rank (1 is most popular)",
+      color = "Sex"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+})
+
+output$summary_table <- renderTable({
+  trend <- name_trend()
+  validate(need(nrow(trend) > 0, "No records found for this name."))
+
+  trend |>
+    mutate(popularity_share = scales::percent(popularity_share, accuracy = 0.001)) |>
+    arrange(sex, year)
+})
+
+output$conclusion_text <- renderText({
+  trend <- name_trend() |> filter(births > 0)
+  validate(need(nrow(trend) > 0, "No records found for this name."))
+
+  summaries <- trend |>
+    group_by(sex) |>
+    group_split() |>
+    map_chr(\(df) {
+      sex_label <- if (unique(df$sex) == "F") "female" else "male"
+      start <- df |> filter(year == min(year))
+      end <- df |> filter(year == max(year))
+      peak <- df |> slice_max(births, n = 1, with_ties = FALSE)
+      direction <- if (end$births > start$births) "increased" else if (end$births < start$births) "decreased" else "remained steady"
+
+      paste0(
+        "For ", sex_label, " babies, the name ", submitted_name(), " ", direction, " from ",
+        format(start$births, big.mark = ","), " births (rank #", start$rank, ") in ", start$year,
+        " to ", format(end$births, big.mark = ","), " births (rank #", end$rank, ") in ", end$year, ". ",
+        "Its peak popularity was in ", peak$year, " with ",
+        format(peak$births, big.mark = ","), " births (rank #", peak$rank, ")."
+      )
+    })
+
+  paste(summaries, collapse = "\n\n")
+})
+```
+
+## Number of babies
+
+```{r}
+plotOutput("births_plot")
+```
+
+## Rank
+
+A smaller rank means greater popularity. The reversed y-axis makes movement toward rank 1 appear higher on the graph.
+
+```{r}
+plotOutput("rank_plot")
+```
+
+## Summary table
+
+```{r}
+tableOutput("summary_table")
+```
+
+## Patterns to discuss
+
+Use the graphs and table to answer these questions:
+
+- Did the number of babies given this name increase, decrease, or stay fairly stable?
+- Did the name's rank change in the same direction as its number of births?
+- Does the name appear for more than one sex? If so, is one trend different from the other?
+- Were there any sudden increases or decreases?
+- Did the name become more or less common relative to all births?
+- What cultural, historical, or generational explanation might help explain the pattern?
+
+## Conclusion
+
+```{r}
+textOutput("conclusion_text")
+```
